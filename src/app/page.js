@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 
 export default function Mediathek() {
@@ -10,13 +10,11 @@ export default function Mediathek() {
   const [videos, setVideos] = useState([]);
   const [linkInput, setLinkInput] = useState('');
   const [search, setSearch] = useState('');
-  const [activeTag, setActiveTag] = useState(null);
   const [loading, setLoading] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
 
   const [editingVideo, setEditingVideo] = useState(null);
-  const [editForm, setEditForm] = useState({ title: '', channel: '', thumbnail: '', url: '', notes: '', tags: [] });
-  const [tagInput, setTagInput] = useState('');
+  const [editForm, setEditForm] = useState({ title: '', channel: '', thumbnail: '', url: '', notes: '' });
   const [editSaving, setEditSaving] = useState(false);
 
   const [authEmail, setAuthEmail] = useState('');
@@ -90,13 +88,15 @@ export default function Mediathek() {
     return match ? match[1] : null;
   }
 
-  async function addVideo() {
+ async function addVideo() {
     if (!linkInput.trim() || !session) return;
     setLoading(true);
     const ytId = getYouTubeId(linkInput);
 
     let newVideo;
+
     if (ytId) {
+      // YouTube: noembed (hat sich bewährt)
       try {
         const res = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${ytId}`);
         const data = await res.json();
@@ -111,21 +111,44 @@ export default function Mediathek() {
           tags: [],
         };
       } catch {
-        alert('Konnte Video-Infos nicht laden.');
+        alert('Konnte YouTube-Infos nicht laden.');
         setLoading(false);
         return;
       }
     } else {
-      newVideo = {
-        user_id: session.user.id,
-        url: linkInput,
-        title: 'Neues Video (bitte Titel eintragen)',
-        channel: 'Unbekannt',
-        thumbnail: null,
-        platform: 'other',
-        yt_id: null,
-        tags: [],
-      };
+      // Alles andere: eigenen Scraper nutzen
+      try {
+        const res = await fetch('/api/scrape', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: linkInput }),
+        });
+        const data = await res.json();
+
+        newVideo = {
+          user_id: session.user.id,
+          url: linkInput,
+          title: data.title || 'Neues Video (bitte Titel eintragen)',
+          channel: data.siteName || 'Unbekannt',
+          thumbnail: data.image || null,
+          platform: 'other',
+          yt_id: null,
+          notes: data.description || null,
+          tags: [],
+        };
+      } catch {
+        // Fallback falls Scraper versagt
+        newVideo = {
+          user_id: session.user.id,
+          url: linkInput,
+          title: 'Neues Video (bitte Titel eintragen)',
+          channel: 'Unbekannt',
+          thumbnail: null,
+          platform: 'other',
+          yt_id: null,
+          tags: [],
+        };
+      }
     }
 
     const { data, error } = await supabase
@@ -163,28 +186,11 @@ export default function Mediathek() {
       thumbnail: video.thumbnail || '',
       url: video.url || '',
       notes: video.notes || '',
-      tags: video.tags || [],
     });
-    setTagInput('');
   }
 
   function closeEdit() {
     setEditingVideo(null);
-  }
-
-  function addTag() {
-    const clean = tagInput.trim().toLowerCase().replace(/\s+/g, '-');
-    if (!clean) return;
-    if (editForm.tags.includes(clean)) {
-      setTagInput('');
-      return;
-    }
-    setEditForm({ ...editForm, tags: [...editForm.tags, clean] });
-    setTagInput('');
-  }
-
-  function removeTag(tag) {
-    setEditForm({ ...editForm, tags: editForm.tags.filter(t => t !== tag) });
   }
 
   async function saveEdit() {
@@ -197,7 +203,6 @@ export default function Mediathek() {
       thumbnail: editForm.thumbnail.trim() || null,
       url: editForm.url.trim(),
       notes: editForm.notes.trim() || null,
-      tags: editForm.tags,
     };
 
     const { data, error } = await supabase
@@ -222,21 +227,10 @@ export default function Mediathek() {
     window.open(url, '_blank', 'noopener,noreferrer');
   }
 
-  // Alle einzigartigen Tags aus allen Videos sammeln
-  const allTags = useMemo(() => {
-    const tagSet = new Set();
-    videos.forEach(v => (v.tags || []).forEach(t => tagSet.add(t)));
-    return Array.from(tagSet).sort();
-  }, [videos]);
-
-  // Videos filtern nach Suche UND Tag
-  const filtered = videos.filter(v => {
-    const matchesSearch =
-      v.title.toLowerCase().includes(search.toLowerCase()) ||
-      (v.channel || '').toLowerCase().includes(search.toLowerCase());
-    const matchesTag = !activeTag || (v.tags || []).includes(activeTag);
-    return matchesSearch && matchesTag;
-  });
+  const filtered = videos.filter(v =>
+    v.title.toLowerCase().includes(search.toLowerCase()) ||
+    (v.channel || '').toLowerCase().includes(search.toLowerCase())
+  );
 
   const titleStyle = {
     display: '-webkit-box',
@@ -364,38 +358,6 @@ export default function Mediathek() {
         </div>
       </header>
 
-      {allTags.length > 0 && (
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-4">
-          <div className="flex items-center gap-2 overflow-x-auto pb-2 -mx-1 px-1">
-            <button
-              type="button"
-              onClick={() => setActiveTag(null)}
-              className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition ${
-                !activeTag
-                  ? 'bg-indigo-600 text-white'
-                  : 'bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-neutral-200'
-              }`}
-            >
-              Alle
-            </button>
-            {allTags.map(tag => (
-              <button
-                key={tag}
-                type="button"
-                onClick={() => setActiveTag(activeTag === tag ? null : tag)}
-                className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition ${
-                  activeTag === tag
-                    ? 'bg-indigo-600 text-white'
-                    : 'bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-neutral-200'
-                }`}
-              >
-                #{tag}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
         {videos.length === 0 && (
           <div className="text-center py-20">
@@ -421,7 +383,7 @@ export default function Mediathek() {
 
         {videos.length > 0 && filtered.length === 0 && (
           <div className="text-center py-20 text-neutral-500">
-            Keine Treffer.
+            Keine Treffer für deine Suche.
           </div>
         )}
 
@@ -429,7 +391,7 @@ export default function Mediathek() {
           {filtered.map(video => (
             <div
               key={video.id}
-              className="group bg-neutral-900 rounded-xl overflow-hidden border border-neutral-800 hover:border-neutral-700 transition-all hover:-translate-y-1 flex flex-col"
+              className="group bg-neutral-900 rounded-xl overflow-hidden border border-neutral-800 hover:border-neutral-700 transition-all hover:-translate-y-1"
             >
               <button
                 type="button"
@@ -460,25 +422,9 @@ export default function Mediathek() {
                   <span className="absolute top-2 left-2 text-[10px] font-semibold px-2 py-0.5 rounded bg-red-600 text-white uppercase tracking-wide">YouTube</span>
                 )}
               </button>
-              <div className="p-3 flex-1 flex flex-col">
+              <div className="p-3">
                 <p className="font-medium text-sm leading-snug mb-1" style={titleStyle}>{video.title}</p>
                 <p className="text-xs text-neutral-500">{video.channel || '—'}</p>
-
-                {video.tags && video.tags.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-2">
-                    {video.tags.map(tag => (
-                      <button
-                        key={tag}
-                        type="button"
-                        onClick={() => setActiveTag(tag)}
-                        className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 hover:bg-indigo-500/20 transition"
-                      >
-                        #{tag}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
                 <div className="flex items-center gap-2 mt-3 pt-3 border-t border-neutral-800">
                   <button
                     type="button"
@@ -565,7 +511,7 @@ export default function Mediathek() {
             onClick={e => e.stopPropagation()}
           >
             <h2 className="text-lg font-semibold mb-1">Video bearbeiten</h2>
-            <p className="text-sm text-neutral-500 mb-5">Änderungen werden beim Speichern übernommen.</p>
+            <p className="text-sm text-neutral-500 mb-5">Alle Änderungen werden sofort gespeichert.</p>
 
             {editForm.thumbnail && (
               <div className="mb-4 aspect-video bg-neutral-950 rounded-lg overflow-hidden border border-neutral-800">
@@ -580,6 +526,7 @@ export default function Mediathek() {
                   type="text"
                   value={editForm.title}
                   onChange={e => setEditForm({ ...editForm, title: e.target.value })}
+                  placeholder="Video-Titel"
                   className="w-full px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-lg text-sm focus:outline-none focus:border-indigo-500 transition"
                 />
               </div>
@@ -590,6 +537,7 @@ export default function Mediathek() {
                   type="text"
                   value={editForm.channel}
                   onChange={e => setEditForm({ ...editForm, channel: e.target.value })}
+                  placeholder="z.B. Max Mustermann"
                   className="w-full px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-lg text-sm focus:outline-none focus:border-indigo-500 transition"
                 />
               </div>
@@ -616,57 +564,11 @@ export default function Mediathek() {
               </div>
 
               <div>
-                <label className="block text-xs text-neutral-400 mb-1">Tags</label>
-                <div className="flex gap-2 mb-2">
-                  <input
-                    type="text"
-                    value={tagInput}
-                    onChange={e => setTagInput(e.target.value)}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        addTag();
-                      }
-                    }}
-                    placeholder="Tag eingeben + Enter"
-                    className="flex-1 px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-lg text-sm focus:outline-none focus:border-indigo-500 transition"
-                  />
-                  <button
-                    type="button"
-                    onClick={addTag}
-                    className="px-3 py-2 bg-neutral-800 hover:bg-neutral-700 rounded-lg text-sm transition"
-                  >
-                    +
-                  </button>
-                </div>
-                {editForm.tags.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5">
-                    {editForm.tags.map(tag => (
-                      <span
-                        key={tag}
-                        className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/20"
-                      >
-                        #{tag}
-                        <button
-                          type="button"
-                          onClick={() => removeTag(tag)}
-                          className="hover:text-red-400 transition"
-                        >
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div>
                 <label className="block text-xs text-neutral-400 mb-1">Notizen (optional)</label>
                 <textarea
                   value={editForm.notes}
                   onChange={e => setEditForm({ ...editForm, notes: e.target.value })}
+                  placeholder="Eigene Notizen..."
                   rows={3}
                   className="w-full px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-lg text-sm focus:outline-none focus:border-indigo-500 transition resize-none"
                 />
