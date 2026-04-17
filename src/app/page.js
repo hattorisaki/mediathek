@@ -1,24 +1,85 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { supabase } from '@/lib/supabase';
 
 export default function Mediathek() {
+  const [session, setSession] = useState(null);
+  const [loadingSession, setLoadingSession] = useState(true);
+
   const [videos, setVideos] = useState([]);
   const [linkInput, setLinkInput] = useState('');
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [mounted, setMounted] = useState(false);
 
+  // Login-State
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authMode, setAuthMode] = useState('signin');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState('');
+
+  // Session beim Start laden
   useEffect(() => {
-    setMounted(true);
-    const saved = localStorage.getItem('videos');
-    if (saved) setVideos(JSON.parse(saved));
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setLoadingSession(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
+  // Videos aus Supabase laden, wenn eingeloggt
   useEffect(() => {
-    if (mounted) localStorage.setItem('videos', JSON.stringify(videos));
-  }, [videos, mounted]);
+    if (!session) {
+      setVideos([]);
+      return;
+    }
+    loadVideos();
+  }, [session]);
+
+  async function loadVideos() {
+    const { data, error } = await supabase
+      .from('videos')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) {
+      console.error('Fehler beim Laden:', error);
+      return;
+    }
+    setVideos(data || []);
+  }
+
+  async function handleSignUp() {
+    setAuthLoading(true);
+    setAuthError('');
+    const { error } = await supabase.auth.signUp({
+      email: authEmail,
+      password: authPassword,
+    });
+    if (error) setAuthError(error.message);
+    setAuthLoading(false);
+  }
+
+  async function handleSignIn() {
+    setAuthLoading(true);
+    setAuthError('');
+    const { error } = await supabase.auth.signInWithPassword({
+      email: authEmail,
+      password: authPassword,
+    });
+    if (error) setAuthError(error.message);
+    setAuthLoading(false);
+  }
+
+  async function handleSignOut() {
+    await supabase.auth.signOut();
+  }
 
   function getYouTubeId(url) {
     const regex = /(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/)([^&?\/\s]{11})/;
@@ -27,42 +88,53 @@ export default function Mediathek() {
   }
 
   async function addVideo() {
-    if (!linkInput.trim()) return;
+    if (!linkInput.trim() || !session) return;
     setLoading(true);
     const ytId = getYouTubeId(linkInput);
 
+    let newVideo;
     if (ytId) {
       try {
         const res = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${ytId}`);
         const data = await res.json();
-        const newVideo = {
-          id: Date.now(),
+        newVideo = {
+          user_id: session.user.id,
           url: linkInput,
           title: data.title || 'Unbekannter Titel',
           channel: data.author_name || 'Unbekannter Kanal',
           thumbnail: `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`,
           platform: 'youtube',
-          ytId,
+          yt_id: ytId,
           tags: [],
-          addedAt: new Date().toISOString(),
         };
-        setVideos([newVideo, ...videos]);
       } catch {
         alert('Konnte Video-Infos nicht laden.');
+        setLoading(false);
+        return;
       }
     } else {
-      const newVideo = {
-        id: Date.now(),
+      newVideo = {
+        user_id: session.user.id,
         url: linkInput,
         title: 'Neues Video (bitte Titel eintragen)',
         channel: 'Unbekannt',
         thumbnail: null,
         platform: 'other',
-        ytId: null,
+        yt_id: null,
         tags: [],
-        addedAt: new Date().toISOString(),
       };
-      setVideos([newVideo, ...videos]);
+    }
+
+    const { data, error } = await supabase
+      .from('videos')
+      .insert(newVideo)
+      .select()
+      .single();
+
+    if (error) {
+      alert('Fehler beim Speichern: ' + error.message);
+    } else {
+      setVideos([data, ...videos]);
     }
 
     setLinkInput('');
@@ -70,10 +142,14 @@ export default function Mediathek() {
     setShowAddModal(false);
   }
 
-  function deleteVideo(id) {
-    if (confirm('Video wirklich löschen?')) {
-      setVideos(videos.filter(v => v.id !== id));
+  async function deleteVideo(id) {
+    if (!confirm('Video wirklich löschen?')) return;
+    const { error } = await supabase.from('videos').delete().eq('id', id);
+    if (error) {
+      alert('Fehler beim Löschen: ' + error.message);
+      return;
     }
+    setVideos(videos.filter(v => v.id !== id));
   }
 
   function openVideo(url) {
@@ -82,7 +158,7 @@ export default function Mediathek() {
 
   const filtered = videos.filter(v =>
     v.title.toLowerCase().includes(search.toLowerCase()) ||
-    v.channel.toLowerCase().includes(search.toLowerCase())
+    (v.channel || '').toLowerCase().includes(search.toLowerCase())
   );
 
   const titleStyle = {
@@ -92,6 +168,79 @@ export default function Mediathek() {
     overflow: 'hidden',
   };
 
+  // Lade-Screen während Session geprüft wird
+  if (loadingSession) {
+    return (
+      <div className="min-h-screen bg-neutral-950 text-neutral-400 flex items-center justify-center">
+        <p className="text-sm">Lade...</p>
+      </div>
+    );
+  }
+
+  // Nicht eingeloggt → Login-Screen
+  if (!session) {
+    return (
+      <div className="min-h-screen bg-neutral-950 text-neutral-100 flex items-center justify-center p-4">
+        <div className="w-full max-w-sm">
+          <div className="flex items-center gap-3 mb-8 justify-center">
+            <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-lg">M</div>
+            <h1 className="text-xl font-semibold">Mediathek</h1>
+          </div>
+
+          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6">
+            <h2 className="text-lg font-semibold mb-1">
+              {authMode === 'signin' ? 'Willkommen zurück' : 'Account erstellen'}
+            </h2>
+            <p className="text-sm text-neutral-500 mb-5">
+              {authMode === 'signin' ? 'Logge dich ein, um deine Mediathek zu sehen.' : 'Erstelle einen Account, um loszulegen.'}
+            </p>
+
+            <div className="space-y-3">
+              <input
+                type="email"
+                value={authEmail}
+                onChange={e => setAuthEmail(e.target.value)}
+                placeholder="Email"
+                className="w-full px-4 py-2.5 bg-neutral-950 border border-neutral-800 rounded-lg text-sm focus:outline-none focus:border-indigo-500 transition"
+              />
+              <input
+                type="password"
+                value={authPassword}
+                onChange={e => setAuthPassword(e.target.value)}
+                placeholder="Passwort (mindestens 6 Zeichen)"
+                className="w-full px-4 py-2.5 bg-neutral-950 border border-neutral-800 rounded-lg text-sm focus:outline-none focus:border-indigo-500 transition"
+              />
+              {authError && (
+                <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                  {authError}
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={authMode === 'signin' ? handleSignIn : handleSignUp}
+                disabled={authLoading || !authEmail || !authPassword}
+                className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition"
+              >
+                {authLoading ? 'Bitte warten...' : authMode === 'signin' ? 'Einloggen' : 'Registrieren'}
+              </button>
+            </div>
+
+            <div className="mt-5 pt-5 border-t border-neutral-800 text-center">
+              <button
+                type="button"
+                onClick={() => { setAuthMode(authMode === 'signin' ? 'signup' : 'signin'); setAuthError(''); }}
+                className="text-sm text-neutral-400 hover:text-neutral-200 transition"
+              >
+                {authMode === 'signin' ? 'Noch kein Account? Registrieren' : 'Schon einen Account? Einloggen'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Eingeloggt → Hauptansicht
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
       <header className="sticky top-0 z-10 backdrop-blur-xl bg-neutral-950/70 border-b border-neutral-800">
@@ -118,6 +267,7 @@ export default function Mediathek() {
               />
             </div>
             <button
+              type="button"
               onClick={() => setShowAddModal(true)}
               className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-medium transition whitespace-nowrap"
             >
@@ -125,6 +275,16 @@ export default function Mediathek() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" />
               </svg>
               <span className="hidden sm:inline">Hinzufügen</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleSignOut}
+              className="px-3 py-2 bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 rounded-lg text-sm transition"
+              title="Abmelden"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
             </button>
           </div>
         </div>
@@ -141,6 +301,7 @@ export default function Mediathek() {
             <h2 className="text-xl font-semibold mb-2">Deine Mediathek ist leer</h2>
             <p className="text-neutral-500 mb-6">Füg dein erstes Video hinzu, um loszulegen.</p>
             <button
+              type="button"
               onClick={() => setShowAddModal(true)}
               className="inline-flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg font-medium transition"
             >
