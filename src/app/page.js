@@ -13,14 +13,16 @@ export default function Mediathek() {
   const [loading, setLoading] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
 
-  // Login-State
+  const [editingVideo, setEditingVideo] = useState(null);
+  const [editForm, setEditForm] = useState({ title: '', channel: '', thumbnail: '', url: '', notes: '' });
+  const [editSaving, setEditSaving] = useState(false);
+
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authMode, setAuthMode] = useState('signin');
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
 
-  // Session beim Start laden
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -34,7 +36,6 @@ export default function Mediathek() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // Videos aus Supabase laden, wenn eingeloggt
   useEffect(() => {
     if (!session) {
       setVideos([]);
@@ -152,6 +153,51 @@ export default function Mediathek() {
     setVideos(videos.filter(v => v.id !== id));
   }
 
+  function startEdit(video) {
+    setEditingVideo(video);
+    setEditForm({
+      title: video.title || '',
+      channel: video.channel || '',
+      thumbnail: video.thumbnail || '',
+      url: video.url || '',
+      notes: video.notes || '',
+    });
+  }
+
+  function closeEdit() {
+    setEditingVideo(null);
+  }
+
+  async function saveEdit() {
+    if (!editingVideo) return;
+    setEditSaving(true);
+
+    const updates = {
+      title: editForm.title.trim() || 'Unbenannt',
+      channel: editForm.channel.trim() || null,
+      thumbnail: editForm.thumbnail.trim() || null,
+      url: editForm.url.trim(),
+      notes: editForm.notes.trim() || null,
+    };
+
+    const { data, error } = await supabase
+      .from('videos')
+      .update(updates)
+      .eq('id', editingVideo.id)
+      .select()
+      .single();
+
+    if (error) {
+      alert('Fehler beim Speichern: ' + error.message);
+      setEditSaving(false);
+      return;
+    }
+
+    setVideos(videos.map(v => v.id === editingVideo.id ? data : v));
+    setEditSaving(false);
+    setEditingVideo(null);
+  }
+
   function openVideo(url) {
     window.open(url, '_blank', 'noopener,noreferrer');
   }
@@ -168,7 +214,6 @@ export default function Mediathek() {
     overflow: 'hidden',
   };
 
-  // Lade-Screen während Session geprüft wird
   if (loadingSession) {
     return (
       <div className="min-h-screen bg-neutral-950 text-neutral-400 flex items-center justify-center">
@@ -177,7 +222,6 @@ export default function Mediathek() {
     );
   }
 
-  // Nicht eingeloggt → Login-Screen
   if (!session) {
     return (
       <div className="min-h-screen bg-neutral-950 text-neutral-100 flex items-center justify-center p-4">
@@ -240,7 +284,6 @@ export default function Mediathek() {
     );
   }
 
-  // Eingeloggt → Hauptansicht
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
       <header className="sticky top-0 z-10 backdrop-blur-xl bg-neutral-950/70 border-b border-neutral-800">
@@ -356,7 +399,7 @@ export default function Mediathek() {
               </button>
               <div className="p-3">
                 <p className="font-medium text-sm leading-snug mb-1" style={titleStyle}>{video.title}</p>
-                <p className="text-xs text-neutral-500">{video.channel}</p>
+                <p className="text-xs text-neutral-500">{video.channel || '—'}</p>
                 <div className="flex items-center gap-2 mt-3 pt-3 border-t border-neutral-800">
                   <button
                     type="button"
@@ -367,8 +410,19 @@ export default function Mediathek() {
                   </button>
                   <button
                     type="button"
+                    onClick={() => startEdit(video)}
+                    className="text-xs py-1.5 px-3 rounded-md bg-neutral-800 hover:bg-indigo-600 transition"
+                    title="Bearbeiten"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => deleteVideo(video.id)}
                     className="text-xs py-1.5 px-3 rounded-md bg-neutral-800 hover:bg-red-600 transition"
+                    title="Löschen"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a2 2 0 012-2h2a2 2 0 012 2v3" />
@@ -416,6 +470,101 @@ export default function Mediathek() {
                 className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition"
               >
                 {loading ? 'Lade...' : 'Hinzufügen'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingVideo && (
+        <div
+          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+          onClick={closeEdit}
+        >
+          <div
+            className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 w-full max-w-lg shadow-2xl my-8"
+            onClick={e => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-semibold mb-1">Video bearbeiten</h2>
+            <p className="text-sm text-neutral-500 mb-5">Alle Änderungen werden sofort gespeichert.</p>
+
+            {editForm.thumbnail && (
+              <div className="mb-4 aspect-video bg-neutral-950 rounded-lg overflow-hidden border border-neutral-800">
+                <img src={editForm.thumbnail} alt="" className="w-full h-full object-cover" />
+              </div>
+            )}
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-neutral-400 mb-1">Titel</label>
+                <input
+                  type="text"
+                  value={editForm.title}
+                  onChange={e => setEditForm({ ...editForm, title: e.target.value })}
+                  placeholder="Video-Titel"
+                  className="w-full px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-lg text-sm focus:outline-none focus:border-indigo-500 transition"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-neutral-400 mb-1">Kanal / Quelle</label>
+                <input
+                  type="text"
+                  value={editForm.channel}
+                  onChange={e => setEditForm({ ...editForm, channel: e.target.value })}
+                  placeholder="z.B. Max Mustermann"
+                  className="w-full px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-lg text-sm focus:outline-none focus:border-indigo-500 transition"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-neutral-400 mb-1">Thumbnail-URL</label>
+                <input
+                  type="text"
+                  value={editForm.thumbnail}
+                  onChange={e => setEditForm({ ...editForm, thumbnail: e.target.value })}
+                  placeholder="https://... (Bild-Link)"
+                  className="w-full px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-lg text-sm focus:outline-none focus:border-indigo-500 transition"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-neutral-400 mb-1">Video-URL</label>
+                <input
+                  type="text"
+                  value={editForm.url}
+                  onChange={e => setEditForm({ ...editForm, url: e.target.value })}
+                  className="w-full px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-lg text-sm focus:outline-none focus:border-indigo-500 transition"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-neutral-400 mb-1">Notizen (optional)</label>
+                <textarea
+                  value={editForm.notes}
+                  onChange={e => setEditForm({ ...editForm, notes: e.target.value })}
+                  placeholder="Eigene Notizen..."
+                  rows={3}
+                  className="w-full px-3 py-2 bg-neutral-950 border border-neutral-800 rounded-lg text-sm focus:outline-none focus:border-indigo-500 transition resize-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2 mt-5">
+              <button
+                type="button"
+                onClick={closeEdit}
+                className="flex-1 py-2.5 bg-neutral-800 hover:bg-neutral-700 rounded-lg text-sm font-medium transition"
+              >
+                Abbrechen
+              </button>
+              <button
+                type="button"
+                onClick={saveEdit}
+                disabled={editSaving}
+                className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-lg text-sm font-medium transition"
+              >
+                {editSaving ? 'Speichert...' : 'Speichern'}
               </button>
             </div>
           </div>
